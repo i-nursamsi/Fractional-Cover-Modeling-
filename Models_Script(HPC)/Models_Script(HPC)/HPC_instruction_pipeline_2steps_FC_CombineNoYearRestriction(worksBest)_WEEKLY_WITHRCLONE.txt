@@ -1,0 +1,101 @@
+To run your script on the HPC without a system-wide Anaconda/Miniconda module, you need to:
+
+Step-by-Step HPC Setup
+Install Miniconda (if not already installed) on the login node.
+
+Bash
+
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh
+Install to /home/u8022291/miniconda3 (your home directory).
+
+Create Your Conda Environment (fc_env).
+source ~/miniconda3/bin/activate
+conda env create -f /home/u8022291/Automating_Workflow/environment.yml
+conda activate fc_env
+
+
+python=module load python/3.11.9-gcc-wyj
+
+
+
+
+#!/bin/bash
+#PBS -A hpcusers
+#PBS -N fc_Sentinel2_Part1
+#PBS -l nodes=1:ppn=8
+#PBS -l walltime=20:00:00
+#PBS -l mem=64gb
+#PBS -j oe
+#PBS -o pipeline3stepsrcloneCHC.log
+
+# Set the base directory for your workflow on the HPC
+WORKFLOW_DIR="/sandisk1/u8022291/Automating_Workflow"
+
+# --- HPC Proxy Configuration (as provided by UniSQ HPC Support) ---
+# These variables enable internet access through the UniSQ web proxy.
+export ftp_proxy="http://139.86.9.82:8080/"
+export http_proxy="http://139.86.9.82:8080/"
+export https_proxy="http://139.86.9.82:8080/"
+export no_proxy="localhost, 127.0.0.1"
+echo "Proxy settings configured for job."
+# --- End Proxy Configuration ---
+
+# --- Rclone Configuration and Data Retrieval ---
+# Define variables for your rclone remote and paths
+RCLONE_CONFIG_NAME="gdrive" # The name you gave your rclone Google Drive remote during setup
+# The source path on Google Drive, relative to the root ("My Drive")
+RCLONE_SOURCE_PATH="GEE_Exports_Weekly_OctNov15_24_CHC"
+# The destination path on your HPC where the files will be stored
+HPC_DESTINATION_PATH="${WORKFLOW_DIR}/Sentinel2Monthly" # Using WORKFLOW_DIR for consistency
+
+echo "Ensuring destination directory exists: ${HPC_DESTINATION_PATH}"
+mkdir -p "${HPC_DESTINATION_PATH}"
+
+echo "Starting data retrieval from Google Drive using rclone..."
+# Use rclone to copy files from Google Drive to the HPC's local storage
+# The --progress flag shows transfer progress.
+# The --drive-skip-gdocs flag prevents errors with Google Docs/Sheets files if present.
+# The --copy-links flag ensures symbolic links are copied as actual files if they point to valid data.
+rclone copy "$RCLONE_CONFIG_NAME:$RCLONE_SOURCE_PATH" "$HPC_DESTINATION_PATH" --progress --drive-skip-gdocs --copy-links
+
+# Check if the rclone command was successful
+if [ $? -ne 0 ]; then
+  echo "ERROR: Data retrieval from Google Drive failed. Exiting pipeline."
+  exit 1
+fi
+echo "Data retrieval completed successfully."
+# --- End Rclone Configuration and Data Retrieval ---
+
+# Load the required Python module
+module load python/3.11.9-gcc-wyj
+
+# Activate your Conda environment
+source ~/miniconda3/bin/activate fc_env
+
+# Change to the workflow directory
+cd $WORKFLOW_DIR
+
+echo "Starting Fractional Cover prediction on individual tiles..."
+# Execute the Fractional Cover prediction script on individual tiles
+python FractionalCover_HPC_Paralell.py
+
+# Check if the FC script ran successfully
+if [ $? -ne 0 ]; then
+    echo "ERROR: Fractional Cover prediction failed. Exiting pipeline."
+    exit 1
+fi
+echo "Fractional Cover prediction completed successfully."
+
+echo "Starting FC tile combination process..."
+# Execute the combine script to merge the FC tiles
+python Combine_Sentinel2_wholeROI_WEEKLY_noYearRestriction.py
+
+# Check if the combination script ran successfully
+if [ $? -ne 0 ]; then
+    echo "ERROR: FC tile combination failed. Exiting pipeline."
+    exit 1
+fi
+echo "FC tile combination completed successfully."
+
+echo "Pipeline finished successfully."
